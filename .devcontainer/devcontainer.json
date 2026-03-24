@@ -1,0 +1,17 @@
+{
+  "name": "wbs-cbs",
+  "dockerComposeFile": "docker-compose.yml",
+  "service": "app",
+  "workspaceFolder": "/workspaces/wbs-cbs-codespaces",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-python.python",
+        "ms-python.vscode-pylance",
+        "dbaeumer.vscode-eslint",
+        "esbenp.prettier-vscode"
+      ]
+    }
+  },
+  "postCreateCommand": "python -m venv .venv && . .venv/bin/activate && pip install -U pip && pip install django djangorestframework django-cors-headers psycopg[binary] pandas openpyxl && cd frontend && (test -f package.json || npm create vite@latest . -- --template react) && npm install"
+}

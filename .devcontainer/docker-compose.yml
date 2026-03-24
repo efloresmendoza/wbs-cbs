@@ -1,0 +1,26 @@
+version: "3.8"
+services:
+  app:
+    image: mcr.microsoft.com/devcontainers/universal:2
+    volumes:
+      - ..:/workspaces/wbs-cbs-codespaces:cached
+    working_dir: /workspaces/wbs-cbs-codespaces
+    command: sleep infinity
+    environment:
+      DATABASE_URL: postgres://postgres:postgres@db:5432/wbscbs
+    ports:
+      - "8000:8000"
+      - "5173:5173"
+  db:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: wbscbs
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+volumes:
+  pgdata:
