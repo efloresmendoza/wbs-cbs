@@ -25,7 +25,14 @@ function App() {
   const [uploadFile, setUploadFile] = useState(null)
   const [uploading, setUploading] = useState(false)
   const [extractedRows, setExtractedRows] = useState([])
-  const [filters, setFilters] = useState({wbs_contains: '', wbs_level_1: '', wbs_level_2: ''})
+  const [filters, setFilters] = useState({
+    activity_name: '',
+    wbs_level_1: '',
+    wbs_level_2: '',
+    wbs_level_3: '',
+    wbs_level_4: '',
+    wbs_level_5: '',
+  })
   const [processing, setProcessing] = useState(false)
 
   async function loadProjects() {
@@ -101,16 +108,25 @@ function App() {
   async function selectProject(project) {
     setSelectedProject(project)
     setExtractedRows([])
-    setFilters({wbs_contains: '', wbs_level_1: '', wbs_level_2: ''})
+    setFilters({
+      activity_name: '',
+      wbs_level_1: '',
+      wbs_level_2: '',
+      wbs_level_3: '',
+      wbs_level_4: '',
+      wbs_level_5: '',
+    })
     await loadExtractedRows()
   }
 
   async function loadExtractedRows() {
     if (!selectedProject) return
     const params = new URLSearchParams()
-    if (filters.wbs_contains) params.append('wbs_contains', filters.wbs_contains)
-    if (filters.wbs_level_1) params.append('wbs_level_1', filters.wbs_level_1)
-    if (filters.wbs_level_2) params.append('wbs_level_2', filters.wbs_level_2)
+    if (filters.activity_name) params.append('activity_name', filters.activity_name)
+    for (let level = 1; level <= 5; level += 1) {
+      const value = filters[`wbs_level_${level}`]
+      if (value) params.append(`wbs_level_${level}`, value)
+    }
     try {
       const res = await fetch(`${API_BASE}${selectedProject.id}/planning-extract/?${params}`)
       if (!res.ok) throw new Error('Unable to fetch extracted rows')
@@ -191,14 +207,29 @@ function App() {
 
   const level1Options = [...new Set(extractedRows.map(r => r.wbs_level_1).filter(Boolean))]
   const level2Options = [...new Set(extractedRows.filter(r => r.wbs_level_1 === filters.wbs_level_1).map(r => r.wbs_level_2).filter(Boolean))]
+  const level3Options = [...new Set(extractedRows.filter(r => r.wbs_level_2 === filters.wbs_level_2).map(r => r.wbs_level_3).filter(Boolean))]
+  const level4Options = [...new Set(extractedRows.filter(r => r.wbs_level_3 === filters.wbs_level_3).map(r => r.wbs_level_4).filter(Boolean))]
+  const level5Options = [...new Set(extractedRows.filter(r => r.wbs_level_4 === filters.wbs_level_4).map(r => r.wbs_level_5).filter(Boolean))]
 
   return (
-    <div className="w-full max-w-[1240px] grid grid-cols-[220px_1fr] gap-4">
+    <div className="w-full min-h-screen mx-auto px-4 lg:px-8 grid grid-cols-[220px_minmax(0,1fr)] gap-4">
       <aside className="space-y-6 p-4 bg-white rounded-xl shadow-sm border border-gray-200 h-fit">
         <div className="text-xl font-bold">WBS-CBS App</div>
         <nav className="space-y-2 text-sm">
-          <a className="block px-3 py-2 rounded-lg bg-indigo-50 text-indigo-700 font-semibold">Dashboard</a>
-          <a className="block px-3 py-2 rounded-lg text-gray-600 hover:bg-gray-100">Projects</a>
+          <button
+            type="button"
+            onClick={() => setSelectedProject(null)}
+            className="w-full text-left px-3 py-2 rounded-lg bg-indigo-50 text-indigo-700 font-semibold"
+          >
+            Dashboard
+          </button>
+          <button
+            type="button"
+            onClick={() => setSelectedProject(null)}
+            className="w-full text-left px-3 py-2 rounded-lg text-gray-600 hover:bg-gray-100"
+          >
+            Projects
+          </button>
         </nav>
       </aside>
 
@@ -326,14 +357,14 @@ function App() {
 
             <div className="mb-4 flex gap-3">
               <input
-                placeholder="Search WBS"
-                value={filters.wbs_contains}
-                onChange={e => setFilters(prev => ({ ...prev, wbs_contains: e.target.value }))}
+                placeholder="Search Activity Name"
+                value={filters.activity_name}
+                onChange={e => setFilters(prev => ({ ...prev, activity_name: e.target.value }))}
                 className="px-3 py-2 border border-gray-300 rounded text-sm"
               />
               <select
                 value={filters.wbs_level_1}
-                onChange={e => setFilters(prev => ({ ...prev, wbs_level_1: e.target.value, wbs_level_2: '' }))}
+                onChange={e => setFilters(prev => ({ ...prev, wbs_level_1: e.target.value, wbs_level_2: '', wbs_level_3: '', wbs_level_4: '', wbs_level_5: '' }))}
                 className="px-3 py-2 border border-gray-300 rounded text-sm"
               >
                 <option value="">All WBS Level 1</option>
@@ -341,12 +372,39 @@ function App() {
               </select>
               <select
                 value={filters.wbs_level_2}
-                onChange={e => setFilters(prev => ({ ...prev, wbs_level_2: e.target.value }))}
+                onChange={e => setFilters(prev => ({ ...prev, wbs_level_2: e.target.value, wbs_level_3: '', wbs_level_4: '', wbs_level_5: '' }))}
                 className="px-3 py-2 border border-gray-300 rounded text-sm"
                 disabled={!filters.wbs_level_1}
               >
                 <option value="">All WBS Level 2</option>
                 {level2Options.map(opt => <option key={opt} value={opt}>{opt}</option>)}
+              </select>
+              <select
+                value={filters.wbs_level_3}
+                onChange={e => setFilters(prev => ({ ...prev, wbs_level_3: e.target.value, wbs_level_4: '', wbs_level_5: '' }))}
+                className="px-3 py-2 border border-gray-300 rounded text-sm"
+                disabled={!filters.wbs_level_2}
+              >
+                <option value="">All WBS Level 3</option>
+                {level3Options.map(opt => <option key={opt} value={opt}>{opt}</option>)}
+              </select>
+              <select
+                value={filters.wbs_level_4}
+                onChange={e => setFilters(prev => ({ ...prev, wbs_level_4: e.target.value, wbs_level_5: '' }))}
+                className="px-3 py-2 border border-gray-300 rounded text-sm"
+                disabled={!filters.wbs_level_3}
+              >
+                <option value="">All WBS Level 4</option>
+                {level4Options.map(opt => <option key={opt} value={opt}>{opt}</option>)}
+              </select>
+              <select
+                value={filters.wbs_level_5}
+                onChange={e => setFilters(prev => ({ ...prev, wbs_level_5: e.target.value }))}
+                className="px-3 py-2 border border-gray-300 rounded text-sm"
+                disabled={!filters.wbs_level_4}
+              >
+                <option value="">All WBS Level 5</option>
+                {level5Options.map(opt => <option key={opt} value={opt}>{opt}</option>)}
               </select>
             </div>
 

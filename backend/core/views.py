@@ -213,10 +213,21 @@ class PlanningExtractView(APIView):
 
         qs = PlanningExtractRow.objects.filter(project=project)
 
-        # Optional filters can be added here later
-        # row_type = request.query_params.get("row_type")
-        # if row_type:
-        #     qs = qs.filter(row_type=row_type)
+        # Filter by activity name (search term)
+        activity_name = request.query_params.get("activity_name")
+        if activity_name:
+            qs = qs.filter(activity_name__icontains=activity_name)
+
+        # Filter by WBS overlay hierarchy levels (1-5)
+        for level in range(1, 6):
+            level_value = request.query_params.get(f"wbs_level_{level}")
+            if level_value:
+                qs = qs.filter(**{f"wbs_level_{level}": level_value})
+
+        # Legacy CSP: allow WBS contains filtering if still used by clients
+        wbs_contains = request.query_params.get("wbs_contains")
+        if wbs_contains:
+            qs = qs.filter(wbs__icontains=wbs_contains)
 
         serializer = PlanningExtractRowSerializer(qs, many=True)
         return Response(serializer.data)
