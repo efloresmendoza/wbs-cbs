@@ -183,17 +183,7 @@ function App() {
 
   async function downloadTemplate() {
     try {
-      const res = await fetch('/api/planning-template/')
-      if (!res.ok) throw new Error('Unable to download template')
-      const blob = await res.blob()
-      const url = window.URL.createObjectURL(blob)
-      const a = document.createElement('a')
-      a.href = url
-      a.download = 'planning_template.xlsx'
-      document.body.appendChild(a)
-      a.click()
-      document.body.removeChild(a)
-      window.URL.revokeObjectURL(url)
+      window.open('/api/planning-template/', '_blank')
     } catch (err) {
       setError(err.message)
     }

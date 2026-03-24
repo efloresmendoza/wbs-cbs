@@ -1,16 +1,18 @@
-from datetime import datetime
 from io import BytesIO
-
 import pandas as pd
+
 from django.core.files.base import ContentFile
 from django.http import HttpResponse
 from rest_framework import status, viewsets
-from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from .models import PlanningExtractRow, PlanningUpload, Project
-from .serializers import PlanningExtractRowSerializer, PlanningUploadSerializer, ProjectSerializer
+from .models import Project, PlanningUpload, PlanningExtractRow
+from .serializers import (
+    ProjectSerializer,
+    PlanningUploadSerializer,
+    PlanningExtractRowSerializer,
+)
 
 
 class ProjectViewSet(viewsets.ModelViewSet):
@@ -19,154 +21,187 @@ class ProjectViewSet(viewsets.ModelViewSet):
 
 
 class PlanningUploadView(APIView):
+    """
+    Handles hierarchical planning registers:
+    - Program headers
+    - WBS summary rows
+    - Activities / milestones
+    """
+
     def post(self, request, project_id):
         try:
             project = Project.objects.get(id=project_id)
         except Project.DoesNotExist:
-            return Response({"error": "Project not found"}, status=status.HTTP_404_NOT_FOUND)
+            return Response({"error": "Project not found"}, status=404)
 
-        file = request.FILES.get('file')
+        file = request.FILES.get("file")
         if not file:
-            return Response({"error": "No file provided"}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"error": "No file provided"}, status=400)
 
-        # Read file content first
         file_content = file.read()
 
-        # Save upload
-        upload = PlanningUpload.objects.create(project=project, file=ContentFile(file_content, name=file.name))
+        upload = PlanningUpload.objects.create(
+            project=project,
+            file=ContentFile(file_content, name=file.name),
+        )
 
-        # Process and store raw planning rows for preview (no WBS split yet)
         try:
-            if file.name.lower().endswith('.xlsx'):
-                df = pd.read_excel(BytesIO(file_content), engine='openpyxl')
-            elif file.name.lower().endswith('.xls'):
-                df = pd.read_excel(BytesIO(file_content), engine='xlrd')
+            if file.name.lower().endswith(".xlsx"):
+                df = pd.read_excel(BytesIO(file_content), engine="openpyxl")
+            elif file.name.lower().endswith(".xls"):
+                df = pd.read_excel(BytesIO(file_content), engine="xlrd")
             else:
-                return Response({"error": "Unsupported file format. Please upload .xlsx or .xls files."}, status=status.HTTP_400_BAD_REQUEST)
+                return Response({"error": "Unsupported file format. Supported formats: .xlsx, .xls"}, status=400)
         except Exception as e:
-            return Response({"error": f"Invalid Excel file: {str(e)}"}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"error": f"Invalid Excel file: {e}"}, status=400)
 
-        required_cols = ['WBS', 'WBS Name', 'Activity ID', 'Activity Name', 'Start', 'Finish']
-        if not all(col in df.columns for col in required_cols):
-            return Response({"error": f"Missing required columns: {required_cols}"}, status=status.HTTP_400_BAD_REQUEST)
+        # Normalize column names to lowercase for case-insensitive matching
+        df.columns = df.columns.str.strip()
+        column_map = {col.lower(): col for col in df.columns}
 
-        PlanningExtractRow.objects.filter(project=project).delete()
+        required_cols = ["wbs", "wbs name"]
+        for col in required_cols:
+            if col not in column_map:
+                return Response({"error": f"Missing required column: {col.title()}. Available columns: {list(df.columns)}"}, status=400)
 
-        rows = []
-        for _, row in df.iterrows():
-            wbs_clean = str(row['WBS']).strip()
-            wbs_name = str(row['WBS Name']).strip()
-            activity_id = str(row.get('Activity ID', '')).strip() or None
-            activity_name = str(row.get('Activity Name', '')).strip() or None
-            start = str(row.get('Start', '')).strip() or None
-            finish = str(row.get('Finish', '')).strip() or None
+        rows_to_create = []
 
+        for _, r in df.iterrows():
+            wbs_raw = str(r.get(column_map["wbs"], "")).strip()
+            wbs_name = str(r.get(column_map["wbs name"], "")).strip()
+
+            activity_id = str(r.get(column_map.get("activity id", "Activity ID"), "")).strip() or None
+            activity_name = str(r.get(column_map.get("activity name", "Activity Name"), "")).strip() or None
+
+            start_raw = str(r.get(column_map.get("start", "Start"), "")).strip() or None
+            finish_raw = str(r.get(column_map.get("finish", "Finish"), "")).strip() or None
+
+            # ---------- WBS LEVEL ----------
             wbs_level = None
-            if 'Wbs Level' in df.columns:
+            wbs_level_key = column_map.get("wbs level") or column_map.get("wbs_level")
+            if wbs_level_key:
                 try:
-                    wbs_level = int(float(row['Wbs Level']))
-                except:
+                    wbs_level = int(float(r.get(wbs_level_key)))
+                except Exception:
                     wbs_level = None
 
-            start_date_clean = None
-            end_date_clean = None
-            if start:
-                try:
-                    start_date_clean = pd.to_datetime(start).date()
-                except:
-                    pass
-            if finish:
-                try:
-                    end_date_clean = pd.to_datetime(finish).date()
-                except:
-                    pass
+            if wbs_level is None and wbs_raw:
+                if "." in wbs_raw:
+                    wbs_level = len(wbs_raw.split("."))
+                else:
+                    wbs_level = 1
 
-            rows.append(PlanningExtractRow(
-                project=project,
-                upload=upload,
-                wbs=wbs_clean,
-                wbs_name=wbs_name,
-                activity_id=activity_id,
-                activity_name=activity_name,
-                start=start,
-                finish=finish,
-                link_01=row.get('link_01'),
-                link_02=row.get('link_02'),
-                link_03=row.get('link_03'),
-                link_04=row.get('link_04'),
-                start_date_clean=start_date_clean,
-                end_date_clean=end_date_clean,
-                wbs_level=wbs_level,
-                wbs_level_1=None,
-                wbs_level_2=None,
-                wbs_level_3=None,
-                wbs_level_4=None,
-                wbs_level_5=None,
-                wbs_level_6=None,
-                wbs_level_7=None,
-                wbs_level_8=None,
-                wbs_level_9=None,
-                wbs_level_10=None,
-                cbs_1=None,
-                cbs_2=None,
-                control_account=None,
-                control_account_name=None,
-            ))
+            rows_to_create.append(
+                PlanningExtractRow(
+                    project=project,
+                    upload=upload,
+                    wbs=wbs_raw,
+                    wbs_name=wbs_name,
+                    activity_id=activity_id,
+                    activity_name=activity_name,
+                    start=start_raw,
+                    finish=finish_raw,
+                    wbs_level=wbs_level,
+                    # hierarchy populated later
+                    wbs_level_1=None,
+                    wbs_level_2=None,
+                    wbs_level_3=None,
+                    wbs_level_4=None,
+                    wbs_level_5=None,
+                    wbs_level_6=None,
+                    wbs_level_7=None,
+                    wbs_level_8=None,
+                    wbs_level_9=None,
+                    wbs_level_10=None,
+                    # clean dates to be filled later
+                    start_date_clean=None,
+                    end_date_clean=None,
+                )
+            )
 
-        PlanningExtractRow.objects.bulk_create(rows)
+        # Process in batches to avoid memory issues with very large files
+        batch_size = 1000
+        total_created = 0
 
-        return Response({"message": "File uploaded and preview rows created. Click 'Process WBS Levels' to fill hierarchy."}, status=status.HTTP_201_CREATED)
+        # Only now replace project rows
+        PlanningExtractRow.objects.filter(project=project).delete()
+
+        for i in range(0, len(rows_to_create), batch_size):
+            batch = rows_to_create[i:i + batch_size]
+            PlanningExtractRow.objects.bulk_create(batch)
+            total_created += len(batch)
+
+        return Response(
+            {
+                "message": "File uploaded successfully",
+                "rows_created": total_created,
+            },
+            status=201,
+        )
 
 
 class PlanningProcessView(APIView):
+    """
+    Populates WBS hierarchy safely (clears deeper levels)
+    """
+
     def post(self, request, project_id):
         try:
             project = Project.objects.get(id=project_id)
         except Project.DoesNotExist:
-            return Response({"error": "Project not found"}, status=status.HTTP_404_NOT_FOUND)
+            return Response({"error": "Project not found"}, status=404)
 
-        rows = PlanningExtractRow.objects.filter(project=project).order_by('id')
+        rows = PlanningExtractRow.objects.filter(project=project).order_by("id")
         if not rows.exists():
-            return Response({"error": "No planning rows found for this project"}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"error": "No rows found"}, status=400)
 
-        wbs_levels = {}
-        updated_count = 0
+        current_levels = {}
 
         for row in rows:
-            level = row.wbs_level
-            if level is None:
-                if row.wbs and '.' in row.wbs:
-                    level = len(row.wbs.split('.'))
-                elif row.wbs:
-                    level = 1
-                else:
-                    level = 1
+            # Prefer explicit wbs_level; fallback to code-derived depth when available
+            if row.wbs_level and row.wbs_level > 0:
+                level = row.wbs_level
+            elif row.wbs:
+                level = len([segment for segment in row.wbs.split('.') if segment.strip()])
+                row.wbs_level = level
+            else:
+                level = 0
 
-            wbs_levels[level] = row.wbs
+            # If WBS code is present, derive ancestor branches from its dot-hierarchy core
+            if row.wbs:
+                segments = [segment.strip() for segment in row.wbs.split('.') if segment.strip()]
+                for i in range(1, 11):
+                    if i <= len(segments):
+                        current_levels[i] = '.'.join(segments[:i])
+                    else:
+                        current_levels.pop(i, None)
+            elif level > 0:
+                # preserve parent levels (no new code) but clear deeper ones
+                for i in range(level + 1, 11):
+                    current_levels.pop(i, None)
 
             for i in range(1, 11):
-                setattr(row, f'wbs_level_{i}', wbs_levels.get(i))
+                setattr(row, f"wbs_level_{i}", current_levels.get(i))
 
             row.wbs_level = level
             row.save(update_fields=[
-                'wbs_level',
-                'wbs_level_1',
-                'wbs_level_2',
-                'wbs_level_3',
-                'wbs_level_4',
-                'wbs_level_5',
-                'wbs_level_6',
-                'wbs_level_7',
-                'wbs_level_8',
-                'wbs_level_9',
-                'wbs_level_10',
+                "wbs_level",
+                "wbs_level_1",
+                "wbs_level_2",
+                "wbs_level_3",
+                "wbs_level_4",
+                "wbs_level_5",
+                "wbs_level_6",
+                "wbs_level_7",
+                "wbs_level_8",
+                "wbs_level_9",
+                "wbs_level_10",
             ])
-            updated_count += 1
 
         project.wbs_loaded = True
-        project.save(update_fields=['wbs_loaded'])
+        project.save(update_fields=["wbs_loaded"])
 
-        return Response({"message": f"Processed WBS levels for {updated_count} rows."}, status=status.HTTP_200_OK)
+        return Response({"message": "WBS hierarchy processed"}, status=200)
 
 
 class PlanningExtractView(APIView):
@@ -174,27 +209,16 @@ class PlanningExtractView(APIView):
         try:
             project = Project.objects.get(id=project_id)
         except Project.DoesNotExist:
-            return Response({"error": "Project not found"}, status=status.HTTP_404_NOT_FOUND)
+            return Response({"error": "Project not found"}, status=404)
 
-        queryset = PlanningExtractRow.objects.filter(project=project)
+        qs = PlanningExtractRow.objects.filter(project=project)
 
-        # Filters
-        wbs_contains = request.query_params.get('wbs_contains')
-        if wbs_contains:
-            queryset = queryset.filter(wbs__icontains=wbs_contains)
+        # Optional filters can be added here later
+        # row_type = request.query_params.get("row_type")
+        # if row_type:
+        #     qs = qs.filter(row_type=row_type)
 
-        wbs_level_1 = request.query_params.get('wbs_level_1')
-        if wbs_level_1:
-            queryset = queryset.filter(wbs_level_1=wbs_level_1)
-
-        wbs_level_2 = request.query_params.get('wbs_level_2')
-        if wbs_level_2:
-            queryset = queryset.filter(wbs_level_2=wbs_level_2)
-
-        cbs_contains = request.query_params.get('cbs_contains')
-        # For now, no filtering since CBS is empty
-
-        serializer = PlanningExtractRowSerializer(queryset, many=True)
+        serializer = PlanningExtractRowSerializer(qs, many=True)
         return Response(serializer.data)
 
 
