@@ -158,32 +158,20 @@ class PlanningProcessView(APIView):
         current_levels = {}
 
         for row in rows:
-            # Prefer explicit wbs_level; fallback to code-derived depth when available
-            if row.wbs_level and row.wbs_level > 0:
-                level = row.wbs_level
-            elif row.wbs:
-                level = len([segment for segment in row.wbs.split('.') if segment.strip()])
-                row.wbs_level = level
-            else:
-                level = 0
+            level = row.wbs_level
 
-            # If WBS code is present, derive ancestor branches from its dot-hierarchy core
-            if row.wbs:
-                segments = [segment.strip() for segment in row.wbs.split('.') if segment.strip()]
-                for i in range(1, 11):
-                    if i <= len(segments):
-                        current_levels[i] = '.'.join(segments[:i])
-                    else:
-                        current_levels.pop(i, None)
-            elif level > 0:
-                # preserve parent levels (no new code) but clear deeper ones
+            if level and level > 0:
+                # This row is at level X, so update wbs_level_X with its WBS code
+                current_levels[level] = row.wbs
+                
+                # Clear all deeper levels (they no longer apply at this parent context)
                 for i in range(level + 1, 11):
                     current_levels.pop(i, None)
 
+            # Assign all current level values to this row
             for i in range(1, 11):
                 setattr(row, f"wbs_level_{i}", current_levels.get(i))
 
-            row.wbs_level = level
             row.save(update_fields=[
                 "wbs_level",
                 "wbs_level_1",
