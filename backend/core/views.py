@@ -2,6 +2,7 @@ from io import BytesIO
 import pandas as pd
 
 from django.core.files.base import ContentFile
+from django.db import transaction
 from django.http import HttpResponse
 from rest_framework import status, viewsets
 from rest_framework.response import Response
@@ -13,6 +14,7 @@ from .serializers import (
     PlanningUploadSerializer,
     PlanningExtractRowSerializer,
 )
+from .services import parse_excel_file, extract_planning_rows, process_wbs_hierarchy
 
 
 class ProjectViewSet(viewsets.ModelViewSet):
@@ -46,90 +48,31 @@ class PlanningUploadView(APIView):
         )
 
         try:
-            if file.name.lower().endswith(".xlsx"):
-                df = pd.read_excel(BytesIO(file_content), engine="openpyxl")
-            elif file.name.lower().endswith(".xls"):
-                df = pd.read_excel(BytesIO(file_content), engine="xlrd")
-            else:
-                return Response({"error": "Unsupported file format. Supported formats: .xlsx, .xls"}, status=400)
+            df = parse_excel_file(file_content, file.name)
+        except ValueError as e:
+            return Response({"error": str(e)}, status=400)
+
+        try:
+            rows_to_create = extract_planning_rows(df, project, upload)
+        except ValueError as e:
+            return Response({"error": str(e)}, status=400)
+
+        # Wrap delete + bulk_create in transaction.atomic
+        try:
+            with transaction.atomic():
+                # Delete existing rows for this project
+                PlanningExtractRow.objects.filter(project=project).delete()
+                
+                # Bulk create new rows
+                batch_size = 1000
+                total_created = 0
+                
+                for i in range(0, len(rows_to_create), batch_size):
+                    batch = rows_to_create[i:i + batch_size]
+                    PlanningExtractRow.objects.bulk_create(batch)
+                    total_created += len(batch)
         except Exception as e:
-            return Response({"error": f"Invalid Excel file: {e}"}, status=400)
-
-        # Normalize column names to lowercase for case-insensitive matching
-        df.columns = df.columns.str.strip()
-        column_map = {col.lower(): col for col in df.columns}
-
-        required_cols = ["wbs", "wbs name"]
-        for col in required_cols:
-            if col not in column_map:
-                return Response({"error": f"Missing required column: {col.title()}. Available columns: {list(df.columns)}"}, status=400)
-
-        rows_to_create = []
-
-        for _, r in df.iterrows():
-            wbs_raw = str(r.get(column_map["wbs"], "")).strip()
-            wbs_name = str(r.get(column_map["wbs name"], "")).strip()
-
-            activity_id = str(r.get(column_map.get("activity id", "Activity ID"), "")).strip() or None
-            activity_name = str(r.get(column_map.get("activity name", "Activity Name"), "")).strip() or None
-
-            start_raw = str(r.get(column_map.get("start", "Start"), "")).strip() or None
-            finish_raw = str(r.get(column_map.get("finish", "Finish"), "")).strip() or None
-
-            # ---------- WBS LEVEL ----------
-            wbs_level = None
-            wbs_level_key = column_map.get("wbs level") or column_map.get("wbs_level")
-            if wbs_level_key:
-                try:
-                    wbs_level = int(float(r.get(wbs_level_key)))
-                except Exception:
-                    wbs_level = None
-
-            if wbs_level is None and wbs_raw:
-                if "." in wbs_raw:
-                    wbs_level = len(wbs_raw.split("."))
-                else:
-                    wbs_level = 1
-
-            rows_to_create.append(
-                PlanningExtractRow(
-                    project=project,
-                    upload=upload,
-                    wbs=wbs_raw,
-                    wbs_name=wbs_name,
-                    activity_id=activity_id,
-                    activity_name=activity_name,
-                    start=start_raw,
-                    finish=finish_raw,
-                    wbs_level=wbs_level,
-                    # hierarchy populated later
-                    wbs_level_1=None,
-                    wbs_level_2=None,
-                    wbs_level_3=None,
-                    wbs_level_4=None,
-                    wbs_level_5=None,
-                    wbs_level_6=None,
-                    wbs_level_7=None,
-                    wbs_level_8=None,
-                    wbs_level_9=None,
-                    wbs_level_10=None,
-                    # clean dates to be filled later
-                    start_date_clean=None,
-                    end_date_clean=None,
-                )
-            )
-
-        # Process in batches to avoid memory issues with very large files
-        batch_size = 1000
-        total_created = 0
-
-        # Only now replace project rows
-        PlanningExtractRow.objects.filter(project=project).delete()
-
-        for i in range(0, len(rows_to_create), batch_size):
-            batch = rows_to_create[i:i + batch_size]
-            PlanningExtractRow.objects.bulk_create(batch)
-            total_created += len(batch)
+            return Response({"error": f"Failed to save data: {str(e)}"}, status=500)
 
         return Response(
             {
@@ -151,45 +94,26 @@ class PlanningProcessView(APIView):
         except Project.DoesNotExist:
             return Response({"error": "Project not found"}, status=404)
 
-        rows = PlanningExtractRow.objects.filter(project=project).order_by("id")
-        if not rows.exists():
-            return Response({"error": "No rows found"}, status=400)
-
-        current_levels = {}
-
-        for row in rows:
-            level = row.wbs_level
-
-            if level and level > 0:
-                # This row is at level X, so update wbs_level_X with its WBS code
-                current_levels[level] = row.wbs
+        try:
+            with transaction.atomic():
+                # Process WBS hierarchy with bulk_update
+                num_updated = process_wbs_hierarchy(project)
                 
-                # Clear all deeper levels (they no longer apply at this parent context)
-                for i in range(level + 1, 11):
-                    current_levels.pop(i, None)
+                # Mark project as WBS loaded
+                project.wbs_loaded = True
+                project.save(update_fields=["wbs_loaded"])
+        except ValueError as e:
+            return Response({"error": str(e)}, status=400)
+        except Exception as e:
+            return Response({"error": f"Failed to process WBS: {str(e)}"}, status=500)
 
-            # Assign all current level values to this row
-            for i in range(1, 11):
-                setattr(row, f"wbs_level_{i}", current_levels.get(i))
-
-            row.save(update_fields=[
-                "wbs_level",
-                "wbs_level_1",
-                "wbs_level_2",
-                "wbs_level_3",
-                "wbs_level_4",
-                "wbs_level_5",
-                "wbs_level_6",
-                "wbs_level_7",
-                "wbs_level_8",
-                "wbs_level_9",
-                "wbs_level_10",
-            ])
-
-        project.wbs_loaded = True
-        project.save(update_fields=["wbs_loaded"])
-
-        return Response({"message": "WBS hierarchy processed"}, status=200)
+        return Response(
+            {
+                "message": "WBS hierarchy processed",
+                "rows_updated": num_updated,
+            },
+            status=200,
+        )
 
 
 class PlanningExtractView(APIView):
